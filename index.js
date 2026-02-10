@@ -16,13 +16,6 @@ const Log = {
 const rawArgs = process.argv.slice(2);
 const cmdInput = rawArgs[0];
 
-const flags = {
-  input: getFlagValue(["--input", "-i"]),
-  output: getFlagValue(["--output", "-o"]) || ".",
-  force: rawArgs.includes("--force") || rawArgs.includes("-f"),
-  verbose: rawArgs.includes("--verbose") || rawArgs.includes("-v"),
-};
-
 function getFlagValue(aliases) {
   for (const alias of aliases) {
     const idx = rawArgs.indexOf(alias);
@@ -33,13 +26,24 @@ function getFlagValue(aliases) {
   return null;
 }
 
+const flags = {
+  input: getFlagValue(["--input", "-i"]),
+  output: getFlagValue(["--output", "-o"]) || ".",
+  force: rawArgs.includes("--force") || rawArgs.includes("-f"),
+  verbose: rawArgs.includes("--verbose") || rawArgs.includes("-v"),
+};
+
 // --- CORE PARSER ---
+/**
+ * Parses ASCII tree text into a node array.
+ * Uses a stack-based approach and detects indentation units.
+ */
 function parseTree(text, baseDir) {
   const lines = text.split("\n").filter((l) => l.trim().length > 0);
   const results = [];
   const stack = [];
 
-  // Determine indentation scale automatically (minimum non-zero indentation)
+  // 1. Detect Indentation Unit (2, 4, etc.)
   let indentUnit = 0;
   lines.forEach((line) => {
     const match = line.match(/^[\s│]+/);
@@ -48,33 +52,35 @@ function parseTree(text, baseDir) {
         indentUnit = match[0].length;
     }
   });
-  indentUnit = indentUnit || 2; // Default to 2 if none found
+  indentUnit = indentUnit || 2;
 
   lines.forEach((line) => {
+    // Regex matches whitespace and box-drawing characters: │, ├, ─, └
     const indentMatch = line.match(/^[\s│├──└──]+/);
-    const depth = indentMatch ? indentMatch[0].length : 0;
-    const name = line.replace(/[│├──└──]/g, "").trim();
-    if (!name) return;
+    const rawDepth = indentMatch ? indentMatch[0].length : 0;
+    const level = Math.round(rawDepth / indentUnit);
 
-    while (stack.length > 0 && stack[stack.length - 1].depth >= depth) {
+    const rawName = line.replace(/[│├──└──]/g, "").trim();
+    if (!rawName) return;
+
+    // Pop stack until we find the parent level
+    while (stack.length > 0 && stack[stack.length - 1].level >= level) {
       stack.pop();
     }
 
+    const isDir = rawName.endsWith("/");
+    const cleanName = isDir ? rawName.slice(0, -1) : rawName;
     const parentPath =
       stack.length > 0 ? stack[stack.length - 1].path : baseDir;
-    const currentPath = path.resolve(parentPath, name);
-
-    // Improved File Detection: Check if it's NOT a directory (ends with /)
-    // or has an extension
-    const isFile =
-      !name.endsWith("/") && (!!path.extname(name) || name.includes("."));
+    const currentPath = path.resolve(parentPath, cleanName);
 
     const node = {
-      name: name.replace(/\/$/, ""),
+      name: cleanName,
       path: currentPath,
-      depth,
-      isFile,
+      level,
+      isFile: !isDir,
     };
+
     results.push(node);
     stack.push(node);
   });
@@ -99,18 +105,27 @@ const Commands = {
         }
       } else {
         fs.mkdirSync(n.path, { recursive: true });
-        if (flags.verbose) Log.step(`Dir: ${n.name}`);
+        if (flags.verbose) Log.step(`Dir: ${n.name}/`);
       }
     });
     Log.success("Creation complete.");
+  },
+
+  "dry-run": async () => {
+    const nodes = parseTree(await getInput(), flags.output);
+    Log.header("🧪 Dry Run Preview:");
+    nodes.forEach((n) => {
+      console.log(`  ${n.isFile ? "📄" : "📁"} ${n.path}`);
+    });
   },
 
   validate: async () => {
     const nodes = parseTree(await getInput(), flags.output);
     Log.header("🔍 Validating Integrity...");
     const missing = nodes.filter((n) => !fs.existsSync(n.path));
-    if (missing.length === 0) Log.success("All items present.");
-    else {
+    if (missing.length === 0) {
+      Log.success("All items present.");
+    } else {
       Log.error(`Missing ${missing.length} items:`);
       missing.forEach((m) => Log.step(m.path));
       process.exit(1);
@@ -119,27 +134,51 @@ const Commands = {
 
   minify: async () => {
     const nodes = parseTree(await getInput(), flags.output);
-    nodes.forEach((n) => console.log(n.path));
+    nodes.forEach((n) => {
+      console.log(n.path);
+    });
   },
 
   format: async () => {
     const nodes = parseTree(await getInput(), flags.output);
     nodes.forEach((n) => {
-      // Logic to recreate visual tree regardless of input messy spacing
-      const indent = "│   ".repeat(
-        Math.max(0, nodes.filter((p) => n.path.startsWith(p.path)).length - 2),
-      );
-      const prefix =
-        n.path === path.resolve(flags.output, n.name) ? "" : indent + "├── ";
-      console.log(`${prefix}${n.name}`);
+      const prefix = "│   ".repeat(n.level) + (n.level > 0 ? "├── " : "");
+      console.log(`${prefix}${n.name}${n.isFile ? "" : "/"}`);
     });
   },
 };
 
+/**
+ * Intelligent input resolver. Finds the positional arg even if flags come first.
+ */
 async function getInput() {
-  const source = flags.input || rawArgs[1];
+  if (flags.input) {
+    return fs.readFileSync(flags.input, "utf8");
+  }
+
+  // Find first arg that isn't a command or a flag value
+  const knownFlagsWithValues = ["--input", "-i", "--output", "-o"];
+  let source = null;
+
+  for (let i = 1; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    const prevArg = rawArgs[i - 1];
+    if (arg.startsWith("-")) continue;
+    if (knownFlagsWithValues.includes(prevArg)) continue;
+    source = arg;
+    break;
+  }
+
   if (!source)
     throw new Error("No input provided. Use -i <file> or a tree string.");
+
+  // Check if it looks like a file path but is missing
+  const looksLikePath =
+    source.includes(".") || source.includes("/") || source.includes("\\");
+  if (looksLikePath && !fs.existsSync(source)) {
+    throw new Error(`File not found: ${source}`);
+  }
+
   return fs.existsSync(source) ? fs.readFileSync(source, "utf8") : source;
 }
 
@@ -160,13 +199,7 @@ const aliasMap = {
 async function main() {
   const cmd = aliasMap[cmdInput];
   try {
-    if (cmd === "dry-run") {
-      const nodes = parseTree(await getInput(), flags.output);
-      Log.header("🧪 Dry Run Preview:");
-      nodes.forEach((n) =>
-        console.log(`  ${n.isFile ? "📄" : "📁"} ${n.path}`),
-      );
-    } else if (Commands[cmd]) {
+    if (Commands[cmd]) {
       await Commands[cmd]();
     } else {
       console.log(`
@@ -184,13 +217,11 @@ async function main() {
   -o, --output   Target directory (default: current)
   -f, --force    Overwrite existing files
   -v, --verbose  Show detailed step-by-step progress
-
-\x1b[1mExample:\x1b[0m
-  tree2f create tree.txt --output ./my-app --force
                 `);
     }
   } catch (e) {
     Log.error(e.message);
+    process.exit(1); // Ensure CI/CD fails on error
   }
 }
 
