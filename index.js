@@ -39,6 +39,17 @@ function parseTree(text, baseDir) {
   const results = [];
   const stack = [];
 
+  // Determine indentation scale automatically (minimum non-zero indentation)
+  let indentUnit = 0;
+  lines.forEach((line) => {
+    const match = line.match(/^[\s│]+/);
+    if (match && match[0].length > 0) {
+      if (indentUnit === 0 || match[0].length < indentUnit)
+        indentUnit = match[0].length;
+    }
+  });
+  indentUnit = indentUnit || 2; // Default to 2 if none found
+
   lines.forEach((line) => {
     const indentMatch = line.match(/^[\s│├──└──]+/);
     const depth = indentMatch ? indentMatch[0].length : 0;
@@ -52,9 +63,18 @@ function parseTree(text, baseDir) {
     const parentPath =
       stack.length > 0 ? stack[stack.length - 1].path : baseDir;
     const currentPath = path.resolve(parentPath, name);
-    const isFile = !!path.extname(name);
 
-    const node = { name, path: currentPath, depth, isFile };
+    // Improved File Detection: Check if it's NOT a directory (ends with /)
+    // or has an extension
+    const isFile =
+      !name.endsWith("/") && (!!path.extname(name) || name.includes("."));
+
+    const node = {
+      name: name.replace(/\/$/, ""),
+      path: currentPath,
+      depth,
+      isFile,
+    };
     results.push(node);
     stack.push(node);
   });
@@ -105,10 +125,12 @@ const Commands = {
   format: async () => {
     const nodes = parseTree(await getInput(), flags.output);
     nodes.forEach((n) => {
+      // Logic to recreate visual tree regardless of input messy spacing
+      const indent = "│   ".repeat(
+        Math.max(0, nodes.filter((p) => n.path.startsWith(p.path)).length - 2),
+      );
       const prefix =
-        n.depth === 0
-          ? ""
-          : "│   ".repeat(Math.max(0, n.depth / 4 - 1)) + "├── ";
+        n.path === path.resolve(flags.output, n.name) ? "" : indent + "├── ";
       console.log(`${prefix}${n.name}`);
     });
   },
@@ -147,9 +169,25 @@ async function main() {
     } else if (Commands[cmd]) {
       await Commands[cmd]();
     } else {
-      console.log(
-        `tree2f (t2f) - Usage: t2f <cmd> [flags]\nCommands: create(c), validate(v), dry-run(dr), minify(min), format(fmt)`,
-      );
+      console.log(`
+\x1b[1mtree2f\x1b[0m - Turn ASCII trees into real folders & files.
+
+\x1b[1mUsage:\x1b[0m
+  tree2f create <input> [flags]
+  tree2f dry-run <input> [flags]
+  tree2f validate <input> [flags]
+  tree2f minify <input> [flags]
+  tree2f format <input> [flags]
+
+\x1b[1mFlags:\x1b[0m
+  -i, --input    File path containing the tree (or raw string)
+  -o, --output   Target directory (default: current)
+  -f, --force    Overwrite existing files
+  -v, --verbose  Show detailed step-by-step progress
+
+\x1b[1mExample:\x1b[0m
+  tree2f create tree.txt --output ./my-app --force
+                `);
     }
   } catch (e) {
     Log.error(e.message);
