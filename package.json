@@ -1,11 +1,27 @@
 {
   "name": "tree2f",
-  "version": "1.0.0",
+  "version": "1.1.2",
   "description": "Zero-dependency tool to convert ASCII trees to files/folders.",
   "main": "index.js",
   "bin": {
     "tree2f": "./index.js",
     "t2f": "./index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fahidnasir/tree2f.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fahidnasir/tree2f/issues"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=14.0.0"
   },
   "keywords": [
     "cli",
