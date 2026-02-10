@@ -1,6 +1,6 @@
 {
   "name": "tree2f",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Zero-dependency tool to convert ASCII trees to files/folders.",
   "main": "index.js",
   "bin": {

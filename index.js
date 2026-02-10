@@ -2,12 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 
-/**
- * tree2f - Tree to Filesystem Manifest Tool
- * A zero-dependency utility for scaffolding projects from ASCII trees.
- */
-
-// --- UTILITIES & LOGGER ---
+// --- LOGGER ---
 const Log = {
   info: (msg) => console.log(`\x1b[36mℹ\x1b[0m ${msg}`),
   success: (msg) => console.log(`\x1b[32m✔\x1b[0m ${msg}`),
@@ -19,7 +14,8 @@ const Log = {
 
 // --- ARGUMENT PARSER ---
 const rawArgs = process.argv.slice(2);
-const command = rawArgs[0];
+const cmdInput = rawArgs[0];
+
 const flags = {
   input: getFlagValue(["--input", "-i"]),
   output: getFlagValue(["--output", "-o"]) || ".",
@@ -30,12 +26,14 @@ const flags = {
 function getFlagValue(aliases) {
   for (const alias of aliases) {
     const idx = rawArgs.indexOf(alias);
-    if (idx !== -1 && rawArgs[idx + 1]) return rawArgs[idx + 1];
+    if (idx !== -1 && rawArgs[idx + 1] && !rawArgs[idx + 1].startsWith("-")) {
+      return rawArgs[idx + 1];
+    }
   }
   return null;
 }
 
-// --- CORE ENGINE ---
+// --- CORE PARSER ---
 function parseTree(text, baseDir) {
   const lines = text.split("\n").filter((l) => l.trim().length > 0);
   const results = [];
@@ -45,7 +43,6 @@ function parseTree(text, baseDir) {
     const indentMatch = line.match(/^[\s│├──└──]+/);
     const depth = indentMatch ? indentMatch[0].length : 0;
     const name = line.replace(/[│├──└──]/g, "").trim();
-
     if (!name) return;
 
     while (stack.length > 0 && stack[stack.length - 1].depth >= depth) {
@@ -65,102 +62,97 @@ function parseTree(text, baseDir) {
 }
 
 // --- COMMAND HANDLERS ---
-async function handleCreate() {
+const Commands = {
+  create: async () => {
+    const content = await getInput();
+    const nodes = parseTree(content, flags.output);
+    Log.header(`🚀 Manifesting Structure: ${path.resolve(flags.output)}`);
+
+    nodes.forEach((n) => {
+      if (n.isFile) {
+        fs.mkdirSync(path.dirname(n.path), { recursive: true });
+        if (fs.existsSync(n.path) && !flags.force) {
+          if (flags.verbose) Log.warn(`Skipped: ${n.name}`);
+        } else {
+          fs.writeFileSync(n.path, "");
+          Log.step(`Created: ${n.name}`);
+        }
+      } else {
+        fs.mkdirSync(n.path, { recursive: true });
+        if (flags.verbose) Log.step(`Dir: ${n.name}`);
+      }
+    });
+    Log.success("Creation complete.");
+  },
+
+  validate: async () => {
+    const nodes = parseTree(await getInput(), flags.output);
+    Log.header("🔍 Validating Integrity...");
+    const missing = nodes.filter((n) => !fs.existsSync(n.path));
+    if (missing.length === 0) Log.success("All items present.");
+    else {
+      Log.error(`Missing ${missing.length} items:`);
+      missing.forEach((m) => Log.step(m.path));
+      process.exit(1);
+    }
+  },
+
+  minify: async () => {
+    const nodes = parseTree(await getInput(), flags.output);
+    nodes.forEach((n) => console.log(n.path));
+  },
+
+  format: async () => {
+    const nodes = parseTree(await getInput(), flags.output);
+    nodes.forEach((n) => {
+      const prefix =
+        n.depth === 0
+          ? ""
+          : "│   ".repeat(Math.max(0, n.depth / 4 - 1)) + "├── ";
+      console.log(`${prefix}${n.name}`);
+    });
+  },
+};
+
+async function getInput() {
   const source = flags.input || rawArgs[1];
   if (!source)
-    throw new Error("Missing input tree. Use -i <file> or provide a string.");
-
-  const rawContent = fs.existsSync(source)
-    ? fs.readFileSync(source, "utf8")
-    : source;
-  const nodes = parseTree(rawContent, flags.output);
-
-  Log.header(`🚀 Manifesting Structure into: ${path.resolve(flags.output)}`);
-  let createdCount = 0;
-  let skippedCount = 0;
-
-  nodes.forEach((node) => {
-    if (node.isFile) {
-      fs.mkdirSync(path.dirname(node.path), { recursive: true });
-      if (fs.existsSync(node.path) && !flags.force) {
-        if (flags.verbose) Log.warn(`Skipped (Exists): ${node.name}`);
-        skippedCount++;
-      } else {
-        fs.writeFileSync(node.path, "");
-        Log.step(`Created File: ${node.name}`);
-        createdCount++;
-      }
-    } else {
-      fs.mkdirSync(node.path, { recursive: true });
-      if (flags.verbose) Log.step(`Created Dir:  ${node.name}`);
-      createdCount++;
-    }
-  });
-
-  Log.success(
-    `Done! Created ${createdCount} items. (Skipped ${skippedCount} existing).`,
-  );
+    throw new Error("No input provided. Use -i <file> or a tree string.");
+  return fs.existsSync(source) ? fs.readFileSync(source, "utf8") : source;
 }
 
-async function handleValidate() {
-  const source = flags.input || rawArgs[1];
-  const rawContent = fs.existsSync(source)
-    ? fs.readFileSync(source, "utf8")
-    : source;
-  const nodes = parseTree(rawContent, flags.output);
+// --- EXECUTION & SHORTHANDS ---
+const aliasMap = {
+  c: "create",
+  create: "create",
+  v: "validate",
+  validate: "validate",
+  dr: "dry-run",
+  "dry-run": "dry-run",
+  min: "minify",
+  minify: "minify",
+  fmt: "format",
+  format: "format",
+};
 
-  Log.header("🔍 Validating Integrity...");
-  const missing = nodes.filter((n) => !fs.existsSync(n.path));
-
-  if (missing.length === 0) {
-    Log.success("File system is 100% in sync with the tree blueprint.");
-  } else {
-    Log.error(
-      `Validation Failed. ${missing.length} items are missing from the disk:`,
-    );
-    missing.forEach((m) => Log.step(m.path));
-    process.exit(1);
-  }
-}
-
-// --- MAIN EXECUTION ---
 async function main() {
+  const cmd = aliasMap[cmdInput];
   try {
-    switch (command) {
-      case "create":
-        await handleCreate();
-        break;
-      case "validate":
-        await handleValidate();
-        break;
-      case "dry-run":
-        const nodes = parseTree(flags.input || rawArgs[1], flags.output);
-        Log.header("🧪 Dry Run: Previewing paths...");
-        nodes.forEach((n) =>
-          console.log(`  ${n.isFile ? "📄" : "📁"} ${n.path}`),
-        );
-        break;
-      default:
-        console.log(`
-\x1b[1mtree2f\x1b[0m - Turn ASCII trees into real folders & files.
-
-\x1b[1mUsage:\x1b[0m
-  tree2f create <input> [flags]
-  tree2f validate <input> [flags]
-
-\x1b[1mFlags:\x1b[0m
-  -i, --input    File path containing the tree (or raw string)
-  -o, --output   Target directory (default: current)
-  -f, --force    Overwrite existing files
-  -v, --verbose  Show detailed step-by-step progress
-
-\x1b[1mExample:\x1b[0m
-  tree2f create tree.txt --output ./my-app --force
-                `);
+    if (cmd === "dry-run") {
+      const nodes = parseTree(await getInput(), flags.output);
+      Log.header("🧪 Dry Run Preview:");
+      nodes.forEach((n) =>
+        console.log(`  ${n.isFile ? "📄" : "📁"} ${n.path}`),
+      );
+    } else if (Commands[cmd]) {
+      await Commands[cmd]();
+    } else {
+      console.log(
+        `tree2f (t2f) - Usage: t2f <cmd> [flags]\nCommands: create(c), validate(v), dry-run(dr), minify(min), format(fmt)`,
+      );
     }
-  } catch (err) {
-    Log.error(err.message);
-    process.exit(1);
+  } catch (e) {
+    Log.error(e.message);
   }
 }
 
